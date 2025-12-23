@@ -1,0 +1,12 @@
+{
+    "id": "{8F03A9DA-9E39-4C7C-9D25-78A02A82C9B1}",
+    "author": "Steffen Langheld",
+    "name": "Tankerkoenig Best Price",
+    "url": "https://github.com/TheEldar/TankerkoenigBestPrice",
+    "compatibility": {
+        "version": "6.0"
+    },
+    "version": "1.9",
+    "build": 11,
+    "date": 1766361600
+}

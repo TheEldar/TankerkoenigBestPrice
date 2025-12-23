@@ -1,0 +1,13 @@
+{
+    "id": "{D6E94E58-7B69-4D8C-A010-4AFA5A4FA9A6}",
+    "name": "BestFuelPrice",
+    "type": 3,
+    "vendor": "Tankerkoenig",
+    "aliases": [
+        "Bester Kraftstoffpreis"
+    ],
+    "parentRequirements": [],
+    "childRequirements": [],
+    "implemented": [],
+    "prefix": "BFP"
+}
