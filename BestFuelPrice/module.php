@@ -42,7 +42,6 @@ class BestFuelPrice extends IPSModule
 
         // Distance options
         $this->RegisterPropertyBoolean('EnableDistance', false);
-        $this->RegisterPropertyBoolean('WriteDistanceToStations', true);
         $this->RegisterPropertyFloat('MaxDistanceKm', 5.0);
 
         // Minutes in UI, converted internally
@@ -67,27 +66,54 @@ class BestFuelPrice extends IPSModule
 
         $this->EnsureProfiles();
 
-        // Output variables
+        // --- Output variables: Icons nur initial setzen ---
+
+        // Zeit
+        $isNew = $this->IsNewIdent(self::OUT_TIME);
         $this->RegisterVariableInteger(self::OUT_TIME, 'Zeit', '~UnixTimestamp', 10);
-        $this->RegisterVariableFloat(self::OUT_PRICE, 'Preis', self::PROFILE_PRICE, 20);
-        $this->RegisterVariableString(self::OUT_NAME, 'Tankstelle', '~TextBox', 30);
-        $this->RegisterVariableFloat(self::OUT_DIST, 'Entfernung', self::PROFILE_DIST, 40);
-        $this->RegisterVariableString(self::OUT_ROUTE, 'Route', '~HTMLBox', 50);
-
-        IPS_SetIcon($this->GetIDForIdent(self::OUT_PRICE), 'Fuel');
-        IPS_SetIcon($this->GetIDForIdent(self::OUT_DIST), 'Distance');
-        IPS_SetIcon($this->GetIDForIdent(self::OUT_ROUTE), 'Map');
-
-        // Remove legacy output variable if present
-        $legacy = @IPS_GetObjectIDByIdent('BestStationInstanceID', $this->InstanceID);
-        if (is_int($legacy) && $legacy > 0 && IPS_ObjectExists($legacy)) {
-            @IPS_DeleteVariable($legacy);
+        if ($isNew) {
+            IPS_SetIcon($this->GetIDForIdent(self::OUT_TIME), 'Clock');
         }
 
-        // Archive price
-        $this->EnableArchiveLogging($this->GetIDForIdent(self::OUT_PRICE));
+        // Preis
+        $isNew = $this->IsNewIdent(self::OUT_PRICE);
+        $this->RegisterVariableFloat(self::OUT_PRICE, 'Preis', self::PROFILE_PRICE, 20);
+        if ($isNew) {
+            IPS_SetIcon($this->GetIDForIdent(self::OUT_PRICE), 'Fuel');
+        }
 
-        // Timer interval from minutes; enforce min 10 min if enabled
+        // Tankstelle (Text)
+        $isNew = $this->IsNewIdent(self::OUT_NAME);
+        $this->RegisterVariableString(self::OUT_NAME, 'Tankstelle', '~TextBox', 30);
+        if ($isNew) {
+            IPS_SetIcon($this->GetIDForIdent(self::OUT_NAME), 'Information');
+        }
+
+        // Entfernung
+        $isNew = $this->IsNewIdent(self::OUT_DIST);
+        $this->RegisterVariableFloat(self::OUT_DIST, 'Entfernung', self::PROFILE_DIST, 40);
+        if ($isNew) {
+            IPS_SetIcon($this->GetIDForIdent(self::OUT_DIST), 'Distance');
+        }
+
+        // Route (HTML)
+        $isNew = $this->IsNewIdent(self::OUT_ROUTE);
+        $this->RegisterVariableString(self::OUT_ROUTE, 'Route', '~HTMLBox', 50);
+        if ($isNew) {
+            IPS_SetIcon($this->GetIDForIdent(self::OUT_ROUTE), 'Map');
+        }
+
+        // --- Legacy cleanup (GetIDForIdent + UnregisterVariable) ---
+        try {
+            // Throws if not existing -> okay
+            $this->GetIDForIdent('BestStationInstanceID');
+            $this->UnregisterVariable('BestStationInstanceID');
+            $this->Dbg('Legacy', 'Removed legacy variable BestStationInstanceID', 0, false);
+        } catch (Throwable $e) {
+            // not present -> ignore
+        }
+
+        // --- Timer interval from minutes; enforce min 10 min if enabled
         $min = max(0, (int)$this->ReadPropertyInteger('AutoUpdateIntervalMinutes'));
         if ($min > 0 && $min < 10) {
             $this->Dbg('Timer', 'AutoUpdateIntervalMinutes < 10 -> clamp to 10', 0, true);
@@ -130,7 +156,6 @@ class BestFuelPrice extends IPSModule
 
                 ['type' => 'Label', 'caption' => '— Distanz (optional) —'],
                 ['type' => 'CheckBox', 'name' => 'EnableDistance', 'caption' => 'Distanzberechnung aktivieren (GoogleMaps Modul notwendig)'],
-                ['type' => 'CheckBox', 'name' => 'WriteDistanceToStations', 'caption' => 'Distanz Variable in Tankstellen-Instanzen anlegen', 'visible' => $enableDistance],
                 ['type' => 'NumberSpinner', 'name' => 'DistanceUpdateIntervalMinutes', 'caption' => 'Distanz-Update Intervall (Minuten)', 'visible' => $enableDistance],
                 ['type' => 'NumberSpinner', 'name' => 'MaxDistanceKm', 'caption' => 'Maximale Entfernung (km) für Bestpreis Berücksichtigung', 'visible' => $enableDistance],
 
@@ -149,7 +174,9 @@ class BestFuelPrice extends IPSModule
 
             ],
             'actions' => [
-                ['type' => 'Button', 'caption' => 'Jetzt berechnen', 'onClick' => 'BFP_Update(' . $this->InstanceID . ');']
+                ['type' => 'Button', 'caption' => 'Jetzt berechnen', 'onClick' => 'BFP_Update(' . $this->InstanceID . ');'],
+                ['type' => 'Button', 'caption' => 'Archivierung (Preis) aktivieren', 'onClick' => 'BFP_EnablePriceLogging(' . $this->InstanceID . ');']
+
             ],
             'status' => [
                 ['code' => 102, 'icon' => 'active',   'caption' => 'OK'],
@@ -173,12 +200,11 @@ class BestFuelPrice extends IPSModule
 
         $enableDistance = (bool)$this->ReadPropertyBoolean('EnableDistance');
         $maxKm          = (float)$this->ReadPropertyFloat('MaxDistanceKm');
-        $writeDistance  = (bool)$this->ReadPropertyBoolean('WriteDistanceToStations');
 
         $distIntervalMin = max(0, (int)$this->ReadPropertyInteger('DistanceUpdateIntervalMinutes'));
         $distIntervalSec = $distIntervalMin * 60;
 
-        // If distance enabled, test origin NOW so we always see issues
+        // --- Distanz: Origin sofort testen (damit Fehler klar sind) ---
         if ($enableDistance) {
             try {
                 $origin = $this->GetOriginLatLng();
@@ -186,7 +212,6 @@ class BestFuelPrice extends IPSModule
             } catch (Throwable $e) {
                 $this->Dbg('Origin.Error', $e->getMessage(), 0, true);
 
-                // IMPORTANT: Only $this->SetValue()
                 $this->SetValue(self::OUT_TIME, 0);
                 $this->SetValue(self::OUT_PRICE, 0.0);
                 $this->SetValue(self::OUT_NAME, 'Standort ungültig: ' . $e->getMessage());
@@ -196,15 +221,90 @@ class BestFuelPrice extends IPSModule
             }
         }
 
+        // --- Distanz-Cache (im Modul) ---
+        // Struktur: { "<stationInstanceId>": { "km": float, "ts": int } }
+        $cacheRaw = (string)$this->GetBuffer('DistanceCache');
+        $distanceCache = json_decode($cacheRaw, true);
+        if (!is_array($distanceCache)) {
+            $distanceCache = [];
+        }
+
+        // Helper als Closure: Distanz read-only aus Instanz oder Cache oder berechnen
+        $getDistanceKm = function (int $stationInstanceId) use (&$distanceCache, $distIntervalSec): ?float {
+
+            // 1) Wenn Tankstellen-Instanz bereits eine DistanceKm Variable hat -> read-only verwenden
+            $distVarId = @IPS_GetObjectIDByIdent(self::IDENT_DISTANCE, $stationInstanceId);
+            if (is_int($distVarId) && $distVarId > 0 && IPS_ObjectExists($distVarId)) {
+                $km = (float)GetValue($distVarId);
+                $updated = (int)(IPS_GetVariable($distVarId)['VariableUpdated'] ?? 0);
+
+                if ($km > 0.001) {
+                    // Cache spiegeln (optional)
+                    $distanceCache[(string)$stationInstanceId] = [
+                        'km' => $km,
+                        'ts' => $updated > 0 ? $updated : time()
+                    ];
+                    return $km;
+                }
+            }
+
+            // 2) Cache prüfen
+            $key = (string)$stationInstanceId;
+            if (isset($distanceCache[$key]['km'], $distanceCache[$key]['ts'])) {
+                $km = (float)$distanceCache[$key]['km'];
+                $ts = (int)$distanceCache[$key]['ts'];
+
+                $due = ($distIntervalSec <= 0) ? true : ($ts == 0 || (time() - $ts) >= $distIntervalSec);
+                if ($km > 0.001 && !$due) {
+                    // ts hochziehen, damit „zuletzt benutzt“ erkennbar ist
+                    $distanceCache[$key]['ts'] = time();
+                    return $km;
+                }
+            }
+
+            // 3) Neu berechnen (nur intern cachen)
+            try {
+                $addr = $this->BuildTankstelleArrayFromInstance($stationInstanceId);
+                if (!is_array($addr)) {
+                    return null;
+                }
+
+                $km = $this->ComputeDistanceKm($addr);
+                if (!is_finite($km) || $km <= 0.001) {
+                    return null;
+                }
+
+                $distanceCache[$key] = ['km' => (float)$km, 'ts' => time()];
+                return (float)$km;
+            } catch (Throwable $e) {
+                $this->Dbg('Distance.Error', 'Station ' . $stationInstanceId . ': ' . $e->getMessage(), 0, true);
+                return null;
+            }
+        };
+
+        // --- Instanzen sammeln ---
         $instances = $this->GetChildInstancesRecursive($categoryId);
         $this->Dbg('Scan', 'Instances in tree: ' . count($instances), 0, false);
 
         $best = null;
-
         $normalizedExpected = $this->NormalizeGuid(self::TANKERKOENIG_MODULE_ID);
+
+        // Mini-Statistik (Debug)
+        $stats = [
+            'total' => count($instances),
+            'tanker' => 0,
+            'open' => 0,
+            'hasFuelVar' => 0,
+            'validPrice' => 0,
+            'distanceOk' => 0,
+            'withinMaxKm' => 0,
+            'candidates' => 0
+        ];
 
         foreach ($instances as $iid) {
             $inst = IPS_GetInstance($iid);
+
+            // Nur Tankerkönig-Instanzen
             $mid = '';
             if (isset($inst['ModuleInfo']) && is_array($inst['ModuleInfo']) && isset($inst['ModuleInfo']['ModuleID'])) {
                 $mid = (string)$inst['ModuleInfo']['ModuleID'];
@@ -212,28 +312,55 @@ class BestFuelPrice extends IPSModule
             if ($this->NormalizeGuid($mid) !== $normalizedExpected) {
                 continue;
             }
+            $stats['tanker']++;
 
+            // Nur geöffnet
             if ($onlyOpen) {
                 $stateVar = $this->FindVariableRecursiveByIdent($iid, self::IDENT_STATE);
-                if ($stateVar === null) continue;
-                if ((int)GetValue($stateVar) !== 1) continue;
+                if ($stateVar === null) {
+                    continue;
+                }
+                if ((int)GetValue($stateVar) !== 1) {
+                    continue;
+                }
             }
+            $stats['open']++;
 
+            // Preisvariable Diesel/E5/E10
             $fuelVar = $this->FindVariableRecursiveByIdent($iid, $fuelIdent);
-            if ($fuelVar === null) continue;
+            if ($fuelVar === null) {
+                continue;
+            }
+            $stats['hasFuelVar']++;
 
             $price = $this->ParsePriceToFloat(GetValue($fuelVar));
-            if ($price === null || $price <= 0) continue;
+            if ($price === null || $price <= 0) {
+                continue;
+            }
+            $stats['validPrice']++;
 
             $priceTime = (int)(IPS_GetVariable($fuelVar)['VariableUpdated'] ?? time());
 
+            // Distanzfilter optional
             $distanceKm = null;
             if ($enableDistance) {
-                $distanceKm = $this->GetOrUpdateDistanceKm($iid, $distIntervalSec, $writeDistance);
-                if ($distanceKm === null || !is_finite($distanceKm) || $distanceKm <= 0.001) continue;
-                if ($maxKm > 0 && $distanceKm > $maxKm) continue;
+                $distanceKm = $getDistanceKm($iid);
+                if ($distanceKm === null || !is_finite($distanceKm) || $distanceKm <= 0.001) {
+                    continue;
+                }
+                $stats['distanceOk']++;
+
+                if ($maxKm > 0) {
+                    if ($distanceKm > $maxKm) {
+                        continue;
+                    }
+                    $stats['withinMaxKm']++;
+                }
             }
 
+            $stats['candidates']++;
+
+            // Best-Logik
             if ($best === null) {
                 $best = ['instanceId' => $iid, 'price' => $price, 'time' => $priceTime, 'distanceKm' => $distanceKm];
                 continue;
@@ -244,13 +371,28 @@ class BestFuelPrice extends IPSModule
                 continue;
             }
 
-            // tie-break: nearer wins if distance enabled
+            // Tie-break: bei Preisgleichheit die nähere (nur sinnvoll wenn Distanz aktiv)
             if ($enableDistance && abs($price - (float)$best['price']) < 0.0005) {
                 if ($distanceKm !== null && $best['distanceKm'] !== null && (float)$distanceKm < (float)$best['distanceKm']) {
                     $best = ['instanceId' => $iid, 'price' => $price, 'time' => $priceTime, 'distanceKm' => $distanceKm];
                 }
             }
         }
+
+        // Cache begrenzen (z.B. 500 Einträge, zuletzt benutzt zuerst)
+        if (count($distanceCache) > 500) {
+            uasort($distanceCache, function ($a, $b) {
+                $ta = (int)($a['ts'] ?? 0);
+                $tb = (int)($b['ts'] ?? 0);
+                return $tb <=> $ta;
+            });
+            $distanceCache = array_slice($distanceCache, 0, 500, true);
+        }
+
+        // Cache zurückschreiben
+        $this->SetBuffer('DistanceCache', json_encode($distanceCache));
+
+        $this->Dbg('Stats', json_encode($stats), 0, true);
 
         if ($best === null) {
             $this->Dbg('Result', 'No candidate found', 0, true);
@@ -263,14 +405,18 @@ class BestFuelPrice extends IPSModule
         }
 
         $iid  = (int)$best['instanceId'];
-        $addr = $this->BuildTankstelleArrayFromInstance($iid);
-        
+        $addr = null;
+        try {
+            $addr = $this->BuildTankstelleArrayFromInstance($iid);
+        } catch (Throwable $e) {
+            $this->Dbg('Address.Error', $e->getMessage(), 0, true);
+        }
+
         $stationName = IPS_GetName($iid);
-        $this->Dbg('stationName ', $stationName , 0, false);
         if (is_array($addr) && isset($addr['station_display_name']) && trim((string)$addr['station_display_name']) !== '') {
             $stationName = (string)$addr['station_display_name'];
         }
-        
+
         $routeHtml = '<div style="padding:8px">Keine Route verfügbar.</div>';
         if ($enableDistance && is_array($addr)) {
             try {
@@ -283,11 +429,11 @@ class BestFuelPrice extends IPSModule
         }
 
         $this->Dbg('Best', json_encode([
-            'instanceId' => $iid,
-            'name' => $stationName,
-            'price' => (float)$best['price'],
-            'time' => (int)$best['time'],
-            'distanceKm' => $best['distanceKm']
+            'instanceId'  => $iid,
+            'name'        => $stationName,
+            'price'       => (float)$best['price'],
+            'time'        => (int)$best['time'],
+            'distanceKm'  => $best['distanceKm']
         ]), 0, true);
 
         $this->SetValue(self::OUT_TIME, (int)$best['time']);
@@ -325,42 +471,50 @@ class BestFuelPrice extends IPSModule
     // ---------------------------
     // Distance handling
     // ---------------------------
-    private function GetOrUpdateDistanceKm(int $stationInstanceId, int $intervalSeconds, bool $writeToStation): ?float
+    private function GetDistanceKmReadOnlyOrCached(int $stationInstanceId, int $cacheIntervalSeconds): ?float
     {
+        // 1) Read-only: vorhandene DistanceKm in Tankerkönig-Instanz nutzen (wenn User sie hat)
         $distVarId = @IPS_GetObjectIDByIdent(self::IDENT_DISTANCE, $stationInstanceId);
-
-        if ((!$distVarId || !IPS_ObjectExists($distVarId)) && $writeToStation) {
-            $distVarId = IPS_CreateVariable(VARIABLETYPE_FLOAT);
-            IPS_SetParent($distVarId, $stationInstanceId);
-            IPS_SetIdent($distVarId, self::IDENT_DISTANCE);
-            IPS_SetName($distVarId, 'Distanz');
-            IPS_SetVariableCustomProfile($distVarId, self::PROFILE_DIST);
-            IPS_SetIcon($distVarId, 'Distance');
-	    IPS_SetPosition($distVarId, 900);
-        }
-
-        $distanceKm = null;
-        $updated = 0;
-
-        if ($distVarId && IPS_ObjectExists($distVarId)) {
-            $distanceKm = (float)GetValue($distVarId);
-            $updated = (int)(IPS_GetVariable($distVarId)['VariableUpdated'] ?? 0);
-        }
-
-        $due = ($intervalSeconds <= 0) ? true : ($updated == 0 || (time() - $updated) >= $intervalSeconds);
-
-        if (($distanceKm === null) || $distanceKm <= 0.001 || $due) {
-            $addr = $this->BuildTankstelleArrayFromInstance($stationInstanceId);
-            if (!is_array($addr)) return null;
-
-            $distanceKm = $this->ComputeDistanceKm($addr);
-
-            if ($writeToStation && $distVarId && IPS_ObjectExists($distVarId)) {
-                SetValue($distVarId, $distanceKm);
+        if (is_int($distVarId) && $distVarId > 0 && IPS_ObjectExists($distVarId)) {
+            $km = (float)GetValue($distVarId);
+            if ($km > 0.001) {
+                return $km;
             }
         }
 
-        return $distanceKm;
+        // 2) Interner Cache (Buffer)
+        $cacheRaw = (string)$this->GetBuffer('DistanceCache');
+        $cache = json_decode($cacheRaw, true);
+        if (!is_array($cache)) {
+            $cache = [];
+        }
+
+        $key = (string)$stationInstanceId;
+        if (isset($cache[$key]['km'], $cache[$key]['ts'])) {
+            $km = (float)$cache[$key]['km'];
+            $ts = (int)$cache[$key]['ts'];
+
+            $due = ($cacheIntervalSeconds <= 0) ? true : ($ts == 0 || (time() - $ts) >= $cacheIntervalSeconds);
+            if ($km > 0.001 && !$due) {
+                return $km;
+            }
+        }
+
+        // 3) Neu berechnen (nur intern speichern!)
+        $addr = $this->BuildTankstelleArrayFromInstance($stationInstanceId);
+        if (!is_array($addr)) {
+            return null;
+        }
+
+        $km = $this->ComputeDistanceKm($addr);
+        if (!is_finite($km) || $km <= 0.001) {
+            return null;
+        }
+
+        $cache[$key] = ['km' => (float)$km, 'ts' => time()];
+        $this->SetBuffer('DistanceCache', json_encode($cache));
+
+        return (float)$km;
     }
 
     // ---------------------------
@@ -430,6 +584,26 @@ class BestFuelPrice extends IPSModule
             AC_SetAggregationType($archiveId, $varId, 0);
             AC_ReAggregateVariable($archiveId, $varId);
         }
+    }
+
+    private function IsNewIdent(string $ident): bool
+    {
+        try {
+            $id = $this->GetIDForIdent($ident);
+            return !IPS_ObjectExists($id);
+        } catch (Throwable $e) {
+            return true; // GetIDForIdent wirft, wenn nicht vorhanden
+        }
+    }
+
+    public function EnablePriceLogging(): void
+    {
+        // BestPrice Variable in dieser Instanz
+        $varId = $this->GetIDForIdent(self::OUT_PRICE);
+
+        $this->EnableArchiveLogging($varId);
+
+        $this->Dbg('Archive', 'Logging enabled for ' . self::OUT_PRICE . ' (VarID=' . $varId . ')', 0, true);
     }
 
     // ---------------------------
@@ -743,4 +917,6 @@ class BestFuelPrice extends IPSModule
         $v = (float)$s;
         return ($v > 0) ? $v : null;
     }
+
+
 }
